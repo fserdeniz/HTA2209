@@ -1,8 +1,9 @@
 {
-  "mode": "manual",
+  "mode": "auto",
   "simulation": true,
+  "run_state": "started",
   "auto_threshold": true,
-  "auto_target_color": "red",
+  "auto_target_color": "yellow",
   "wheel_polarity": {
     "front_left": 1,
     "front_right": 1,
@@ -10,15 +11,15 @@
     "rear_right": 1
   },
   "wheels": {
-    "front_left": 0,
-    "front_right": 0,
-    "rear_left": 0,
-    "rear_right": 0
+    "front_left": 0.0,
+    "front_right": 0.0,
+    "rear_left": 0.0,
+    "rear_right": 0.0
   },
   "arm": {
     "base": 74.25,
-    "shoulder": 105,
-    "elbow": 130,
+    "shoulder": 105.0,
+    "elbow": 130.0,
     "wrist": 90.0,
     "gripper": 10.0
   },
@@ -26,26 +27,58 @@
     "red": {
       "hue_min": 0,
       "hue_max": 30,
-      "sat_min": 0,
-      "sat_max": 209,
-      "val_min": 10,
-      "val_max": 255
+      "sat_min": 11,
+      "sat_max": 72,
+      "val_min": 28,
+      "val_max": 194
     },
     "green": {
       "hue_min": 0,
       "hue_max": 30,
-      "sat_min": 0,
-      "sat_max": 209,
-      "val_min": 10,
-      "val_max": 255
+      "sat_min": 11,
+      "sat_max": 72,
+      "val_min": 28,
+      "val_max": 194
     },
     "blue": {
       "hue_min": 0,
       "hue_max": 30,
-      "sat_min": 0,
-      "sat_max": 209,
-      "val_min": 10,
-      "val_max": 255
+      "sat_min": 11,
+      "sat_max": 72,
+      "val_min": 28,
+      "val_max": 194
+    },
+    "yellow": {
+      "hue_min": 20,
+      "hue_max": 40,
+      "sat_min": 11,
+      "sat_max": 72,
+      "val_min": 28,
+      "val_max": 194
+    },
+    "orange": {
+      "hue_min": 5,
+      "hue_max": 25,
+      "sat_min": 11,
+      "sat_max": 72,
+      "val_min": 28,
+      "val_max": 194
+    },
+    "purple": {
+      "hue_min": 130,
+      "hue_max": 165,
+      "sat_min": 11,
+      "sat_max": 72,
+      "val_min": 28,
+      "val_max": 194
+    },
+    "cyan": {
+      "hue_min": 80,
+      "hue_max": 100,
+      "sat_min": 11,
+      "sat_max": 72,
+      "val_min": 28,
+      "val_max": 194
     }
   }
 }

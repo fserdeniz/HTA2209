@@ -38,7 +38,7 @@ ARM_CHANNELS = {
 }
 
 SUPPORTED_MODES = ("manual", "auto")
-DEFAULT_COLORS = ("red", "green", "blue")
+DEFAULT_COLORS = ("red", "green", "blue", "yellow", "orange", "purple", "cyan")
 
 
 @dataclass
@@ -84,14 +84,22 @@ class RobotController:
         self.wheel_state: Dict[str, float] = {wheel: 0.0 for wheel in WHEEL_CHANNELS}
         self.wheel_polarity: Dict[str, int] = {wheel: 1 for wheel in WHEEL_CHANNELS}
         self.arm_state: Dict[str, float] = {joint: 90.0 for joint in ARM_CHANNELS}
-        self.color_thresholds: Dict[str, Threshold] = {
-            color: Threshold().clamp() for color in DEFAULT_COLORS
+        default_thr = {
+            "red": Threshold(0, 15, 80, 255, 80, 255),
+            "orange": Threshold(5, 25, 80, 255, 80, 255),
+            "yellow": Threshold(20, 40, 80, 255, 80, 255),
+            "green": Threshold(45, 90, 80, 255, 80, 255),
+            "cyan": Threshold(80, 100, 80, 255, 80, 255),
+            "blue": Threshold(100, 140, 80, 255, 80, 255),
+            "purple": Threshold(130, 165, 80, 255, 80, 255),
         }
+        self.color_thresholds: Dict[str, Threshold] = {color: default_thr.get(color, Threshold()).clamp() for color in DEFAULT_COLORS}
         self.auto_threshold_enabled: bool = False
         self.auto_target_color: str = DEFAULT_COLORS[0]
         self.auto_grasped: bool = False
         self.mode: str = "manual"
         self.simulation_enabled: bool = False
+        self.run_state: str = "stopped"  # started, paused, stopped
         self.last_target: Optional[Tuple[int, int, int]] = None  # (cx, cy, area)
         self.supply_voltage: float = 5.0
         self.supply_current: float = 0.0
@@ -130,6 +138,8 @@ class RobotController:
         if wheel not in self.wheel_state:
             raise ValueError(f"Bilinmeyen tekerlek: {wheel}")
         clamped = max(-100.0, min(100.0, speed_percentage))
+        if not self.is_running():
+            clamped = 0.0
         self.wheel_state[wheel] = clamped
         throttle = (self.wheel_polarity.get(wheel, 1) * clamped) / 100.0
         self.pwm_output[wheel] = throttle
@@ -179,6 +189,7 @@ class RobotController:
         return {
             "mode": self.mode,
             "simulation": self.simulation_enabled,
+            "run_state": self.run_state,
             "auto_threshold": self.auto_threshold_enabled,
             "auto_target_color": self.auto_target_color,
             "wheel_polarity": self.wheel_polarity,
@@ -233,6 +244,7 @@ class RobotController:
         if target in self.color_thresholds:
             self.auto_target_color = target
         self.simulation_enabled = bool(raw.get("simulation", self.simulation_enabled))
+        self.run_state = raw.get("run_state", "stopped")
 
         self._recompute_power()
         LOGGER.info("Konfigurasyon %s dosyasindan yuklendi.", self.config_path)
@@ -272,6 +284,26 @@ class RobotController:
     def set_simulation(self, enabled: bool) -> None:
         self.simulation_enabled = bool(enabled)
         LOGGER.info("Simulasyon modu %s.", "acik" if self.simulation_enabled else "kapali")
+
+    # ------------------------------------------------------------------ #
+    # Run state helpers
+    # ------------------------------------------------------------------ #
+    def set_run_state(self, state: str) -> None:
+        normalized = state.lower()
+        if normalized not in ("started", "paused", "stopped"):
+            raise ValueError(f"Bilinmeyen calisma durumu: {state}")
+        self.run_state = normalized
+        if normalized in ("paused", "stopped"):
+            self.stop_all_motion()
+        if normalized == "stopped":
+            self.auto_grasped = False
+        LOGGER.info("Calisma durumu %s olarak ayarlandi.", normalized)
+
+    def is_running(self) -> bool:
+        return self.run_state == "started"
+
+    def is_paused(self) -> bool:
+        return self.run_state == "paused"
 
     def stop_all_motion(self) -> None:
         for wheel in self.wheel_state:
@@ -319,33 +351,47 @@ class RobotController:
     # ------------------------------------------------------------------ #
     # Autopilot (color approach + grasp)
     # ------------------------------------------------------------------ #
-    def _mask_target(self, hsv_frame: np.ndarray) -> Tuple[np.ndarray, Optional[Tuple[int, int, int]]]:
+    def _mask_target(self, hsv_frame: np.ndarray) -> Tuple[np.ndarray, Optional[Tuple[int, int, int, float]]]:
         thr = self.color_thresholds.get(self.auto_target_color)
         if thr is None:
             return np.zeros(hsv_frame.shape[:2], dtype=np.uint8), None
         lower = np.array([thr.hue_min, thr.sat_min, thr.val_min], dtype=np.uint8)
         upper = np.array([thr.hue_max, thr.sat_max, thr.val_max], dtype=np.uint8)
         mask = cv2.inRange(hsv_frame, lower, upper)
+        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         if not contours:
             return mask, None
         largest = max(contours, key=cv2.contourArea)
         area = cv2.contourArea(largest)
+        min_area = max(150.0, mask.shape[0] * mask.shape[1] * 0.002)
+        if area < min_area:
+            return mask, None
         M = cv2.moments(largest)
         if M["m00"] == 0:
-            return mask, None
-        cx = int(M["m10"] / M["m00"])
-        cy = int(M["m01"] / M["m00"])
-        return mask, (cx, cy, int(area))
+            x, y, w, h = cv2.boundingRect(largest)
+            cx = int(x + w / 2)
+            cy = int(y + h / 2)
+        else:
+            cx = int(M["m10"] / M["m00"])
+            cy = int(M["m01"] / M["m00"])
+        # Basit derinlik tahmini: normalize alan tersine orantili (0-1 arasi)
+        depth_norm = 1.0 / max(1.0, min(area, mask.shape[0] * mask.shape[1]))
+        depth_norm = max(0.0, min(1.0, depth_norm * 1000))  # basit ölçekleme
+        return mask, (cx, cy, int(area), depth_norm)
 
-    def _aim_arm(self, target: Tuple[int, int, int], frame_size: Tuple[int, int]) -> None:
+    def _aim_arm(self, target: Tuple[int, int, int, float], frame_size: Tuple[int, int]) -> None:
         """
         Move arm joints toward the target based on its image position/size.
         Assumes camera is mounted above the arm; uses simple heuristics:
         - base tracks horizontal error
         - shoulder/elbow adjust with perceived area (distance proxy)
         """
-        cx, _cy, area = target
+        cx, _cy, area, _depth = target
         width, height = frame_size
         center_x = width // 2
         error_x = cx - center_x
@@ -377,17 +423,24 @@ class RobotController:
         - Approach when target centered.
         - Trigger grasp when close enough (area threshold).
         """
-        if self.is_manual():
+        if self.is_manual() or not self.is_running():
             return
         width, height = frame_size
         mask, target = self._mask_target(hsv_frame)
+        if target and self.last_target:
+            prev_cx, prev_cy, _, prev_depth = self.last_target
+            cx, cy, area, depth = target
+            cx = int(0.6 * prev_cx + 0.4 * cx)
+            cy = int(0.6 * prev_cy + 0.4 * cy)
+            depth = 0.6 * prev_depth + 0.4 * depth
+            target = (cx, cy, area, depth)
         self.last_target = target
         if target is None:
             # search: slow rotate left
             self._set_drive(turn=20.0, forward=0.0)
             return
 
-        cx, cy, area = target
+        cx, cy, area, _depth = target
         center_x = width // 2
         error_x = cx - center_x
         turn = -error_x * 0.1  # simple P controller
@@ -447,6 +500,7 @@ class RobotController:
         return {
             "mode": self.mode,
             "simulation": self.simulation_enabled,
+            "run_state": self.run_state,
             "auto_target_color": self.auto_target_color,
             "auto_threshold": self.auto_threshold_enabled,
             "auto_grasped": self.auto_grasped,

@@ -57,11 +57,13 @@ python -m hta2209.gui --config config/settings.json --log-level INFO
 
 - **Orta panel (Kamera)**: Kamera onizlemesi her zaman merkezde kalir, ortam aydinlatmasi icin otomatik S/V uyarlama yapabilir. Sol panelden kamera indexini secip Baslat/Durdur yapabilirsiniz.
 - **Sol panel (Ayarlar)**: Manual/Auto mod secimi, konfig kaydet/yukle ve kamera kontrol butonlari.
+- **Calisma Durumu**: Baslat/Duraklat/Durdur butonlari; Baslat olmadan surus ve autopilot calismaz, Duraklat/Durdur tum hareketi aninda durdurur.
 - **Sag sekmeler**:
   - **Baglanti**: Donanimin hazir olup olmadigini ve konfig dosyasini gosterir.
   - **Renk Esikleri**: HSV bandlarini (H min/max, S min/max, V min/max) ayarlayin.
   - **Surus Kontrol**: Her tekerlek icin -100/+100 arasi hiz; "Tekerlekleri Durdur" tum throttle'i sifirlar.
   - **Robot Kol**: Baz, omuz, dirsek, bilek ve gripper servo acilarini 0-180 derece arasinda degistirin.
+  - **Grafikler**: Mod, simülasyon durumu, hedef renk ve ek metrikleri (PWM, volt/akim/guc) gosterir. Auto hedef renkleri listesine kirmizi/yesil/mavi'ye ek olarak sari, turuncu, mor, camgöbeği dahildir.
 
 GUI ust kismindaki "Kaydet" mevcut durumu `config/settings.json` dosyasina yazar; "Yeniden Yukle" ayni dosyadan geri alir. Dosya yoksa otomatik olusturulur.
 

@@ -62,6 +62,7 @@ class HTAControlGUI:
         self.status_var = tk.StringVar()
         self.mode_var = tk.StringVar(value=self.controller.mode)
         self.simulation_var = tk.BooleanVar(value=self.controller.is_simulation())
+        self.run_state_var = tk.StringVar(value=self.controller.run_state)
         self.manual_drive_level = 0.0
         self.manual_turn_level = 0.0
 
@@ -138,6 +139,10 @@ class HTAControlGUI:
         log_frame = ttk.Frame(root_paned)
         root_paned.add(log_frame, weight=1)
         self._create_log_panel(log_frame)
+
+        # Varsayilan kamerayi otomatik tara ve varsa onizlemeyi hazirla
+        self._refresh_camera_devices()
+        # Kullanici isterse "Baslat" ile acacak; otomatik baslatma yok
 
     def _create_header(self) -> None:
         top_frame = ttk.Frame(self.root, padding=10)
@@ -360,6 +365,7 @@ class HTAControlGUI:
         rows = [
             ("Mod", "mode"),
             ("Simulasyon", "simulation"),
+            ("Calisma", "run_state"),
             ("Auto hedef rengi", "auto_target_color"),
             ("Otomatik esikleme", "auto_threshold"),
             ("Auto kavrama", "auto_grasped"),
@@ -428,6 +434,10 @@ class HTAControlGUI:
 
     # Camera discovery helpers ---------------------------------------- #
     def _format_camera_label(self, index: int, name: str) -> str:
+        if sys.platform.startswith("win"):
+            return f"Kamera {index} - {name}"
+        elif sys.platform == "darwin":
+            return f"AVF {index} - {name}"
         return f"/dev/video{index} - {name}"
 
     def _is_capture_device(self, index: int) -> bool:
@@ -477,6 +487,14 @@ class HTAControlGUI:
                 name_file = entry / "name"
                 name = name_file.read_text().strip() if name_file.exists() else "Bilinmiyor"
                 devices.append((idx, name))
+
+        # Windows/macOS veya v4l2 olmayan ortamlarda hizli tarama (yerel/embedded kameralar)
+        if not devices:
+            probe_range = list(range(0, 5))
+            for idx in probe_range:
+                if self._check_camera_available(idx):
+                    devices.append((idx, "Varsayilan Kamera"))
+
         self._camera_devices = devices
         self._update_camera_combo()
 
@@ -504,11 +522,14 @@ class HTAControlGUI:
             self.camera_index_var.set(self._camera_devices[0][0])
         if not values:
             self.camera_choice_var.set("")
+            self.camera_status_var.set("Kamera bulunamadi")
 
     def _on_camera_choice(self, _event=None) -> None:
         choice = self.camera_choice_var.get()
         for idx, name in self._camera_devices:
-            if choice.startswith(f"/dev/video{idx}"):
+            if choice.startswith(f"/dev/video{idx}") or choice.startswith(f"Kamera {idx}") or choice.startswith(
+                f"AVF {idx}"
+            ):
                 self.camera_index_var.set(idx)
                 return
 
@@ -619,19 +640,10 @@ class HTAControlGUI:
                 self._stop_stream()
             else:
                 self._camera_failures += 1
-                if self._camera_failures >= 5:
-                    # Kamera takilip cikartilmis veya format bozulmus olabilir, yeniden ac
-                    if self._current_camera_index is not None:
-                        new_cap = self._open_camera_capture(self._current_camera_index)
-                        if new_cap is not None:
-                            if self.camera_capture is not None:
-                                self.camera_capture.release()
-                            self.camera_capture = new_cap
-                            self._camera_failures = 0
-                            self.camera_status_var.set(
-                                f"Kamera yeniden acildi (index {self._current_camera_index})"
-                            )
-                self.camera_status_var.set("Kare okunamadi, tekrar denenecek...")
+                # Sık aç/kapa yapmamak için sadece bekle ve yeniden dene
+                self.camera_status_var.set(
+                    f"Kare okunamadi, tekrar denenecek... (deneme {self._camera_failures})"
+                )
                 self.camera_loop_id = self.root.after(CAMERA_FRAME_INTERVAL_MS, self._update_camera_frame)
             return
         self._camera_failures = 0
@@ -653,11 +665,11 @@ class HTAControlGUI:
             hsv = cv2.cvtColor(self._last_frame, cv2.COLOR_BGR2HSV)
             self.controller.autopilot_step(hsv, (frame.shape[1], frame.shape[0]))
             if self.controller.last_target:
-                cx, cy, area = self.controller.last_target
+                cx, cy, area, depth = self.controller.last_target
                 cv2.circle(display_frame, (cx, cy), 8, (0, 255, 0), 2)
                 cv2.putText(
                     display_frame,
-                    f"X={cx}, Y={cy}",
+                    f"X={cx}, Y={cy}, Z~{depth:.2f}",
                     (cx + 10, max(20, cy - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -710,11 +722,11 @@ class HTAControlGUI:
                 hsv = cv2.cvtColor(self._last_frame, cv2.COLOR_BGR2HSV)
                 self.controller.autopilot_step(hsv, (frame.shape[1], frame.shape[0]))
                 if self.controller.last_target:
-                    cx, cy, area = self.controller.last_target
+                    cx, cy, area, depth = self.controller.last_target
                     cv2.circle(display_frame, (cx, cy), 8, (0, 255, 0), 2)
                     cv2.putText(
                         display_frame,
-                        f"X={cx}, Y={cy}",
+                        f"X={cx}, Y={cy}, Z~{depth:.2f}",
                         (cx + 10, max(20, cy - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
@@ -831,6 +843,19 @@ class HTAControlGUI:
             command=self._on_simulation_toggle,
         )
         sim_check.pack(anchor="w", pady=(4, 6))
+
+        run_frame = ttk.LabelFrame(settings, text="Calisma Durumu", padding=5)
+        run_frame.pack(fill=tk.X, pady=(0, 5))
+        ttk.Button(run_frame, text="Baslat", command=lambda: self._set_run_state("started")).pack(
+            side=tk.LEFT, padx=4
+        )
+        ttk.Button(run_frame, text="Duraklat", command=lambda: self._set_run_state("paused")).pack(
+            side=tk.LEFT, padx=4
+        )
+        ttk.Button(run_frame, text="Durdur", command=lambda: self._set_run_state("stopped")).pack(
+            side=tk.LEFT, padx=4
+        )
+        ttk.Label(run_frame, textvariable=self.run_state_var, foreground="blue").pack(side=tk.LEFT, padx=6)
 
         color_frame = ttk.Frame(settings)
         color_frame.pack(fill=tk.X, pady=(5, 5))
@@ -985,21 +1010,50 @@ class HTAControlGUI:
         self._append_log(f"Simulasyon modu {'acik' if self.controller.is_simulation() else 'kapali'}")
         self.refresh_from_controller()
 
+    def _set_run_state(self, state: str) -> None:
+        try:
+            self.controller.set_run_state(state)
+        except ValueError as exc:
+            messagebox.showerror("Hata", str(exc))
+            return
+        self.controller.save_config()
+        self._append_log(f"Calisma durumu: {state}")
+        self.refresh_from_controller()
+
     def _on_auto_threshold_toggle(self) -> None:
         enabled = self.auto_threshold_var.get()
         self.controller.set_auto_threshold_enabled(enabled)
 
     # ------------------------------------------------------------------ #
-    def _open_camera_capture(self, index: int) -> cv2.VideoCapture | None:
-        """Open camera with a safe default format and verify frame read."""
-        backends = [cv2.CAP_V4L2, cv2.CAP_ANY]
-        for backend in backends:
+    def _camera_backends(self) -> list[int]:
+        if sys.platform.startswith("win"):
+            return [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+        if sys.platform == "darwin":
+            return [cv2.CAP_AVFOUNDATION, cv2.CAP_ANY]
+        return [cv2.CAP_V4L2, cv2.CAP_ANY]
+
+    def _check_camera_available(self, index: int) -> bool:
+        for backend in self._camera_backends():
             cap = cv2.VideoCapture(index, backend)
             if not cap.isOpened():
                 cap.release()
                 continue
-            # Safer defaults for USB2 cams: lower res + YUYV
-            cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
+            ret, _ = cap.read()
+            cap.release()
+            if ret:
+                return True
+        return False
+
+    def _open_camera_capture(self, index: int) -> cv2.VideoCapture | None:
+        """Open camera with a safe default format and verify frame read."""
+        for backend in self._camera_backends():
+            cap = cv2.VideoCapture(index, backend)
+            if not cap.isOpened():
+                cap.release()
+                continue
+            # Safer defaults for USB2 cams (Linux). Windows/mac'te varsayilan format kullan
+            if not sys.platform.startswith("win") and sys.platform != "darwin":
+                cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"YUYV"))
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             cap.set(cv2.CAP_PROP_FPS, 10)
@@ -1023,14 +1077,15 @@ class HTAControlGUI:
         self.controller.auto_target_color = self.target_color_var.get()
 
     def _set_manual_controls_state(self, enabled: bool) -> None:
+        allow = enabled and self.controller.is_running()
         for scale in self.wheel_scales.values():
-            self._set_widget_state(scale, enabled)
+            self._set_widget_state(scale, allow)
         for scale in self.joint_scales.values():
-            self._set_widget_state(scale, enabled)
+            self._set_widget_state(scale, allow)
         if self.stop_button is not None:
-            self._set_widget_state(self.stop_button, enabled)
+            self._set_widget_state(self.stop_button, allow)
         for btn in self.drive_buttons:
-            self._set_widget_state(btn, enabled)
+            self._set_widget_state(btn, allow)
 
     @staticmethod
     def _set_widget_state(widget, enabled: bool) -> None:
@@ -1056,11 +1111,16 @@ class HTAControlGUI:
         mode_label = f"Mod: {self.controller.mode.title()}"
         sim = self.controller.is_simulation()
         hw_label = (
-            "Simulasyon modu (donanim yazmiyor)" if sim else "Donanim hazir" if self.controller.hardware_ready else "Donanim bagli degil"
+            "Simulasyon modu (donanim yazmiyor)"
+            if sim
+            else "Donanim hazir"
+            if self.controller.hardware_ready
+            else "Donanim bagli degil"
         )
         self.status_var.set(f"{mode_label} | {hw_label}")
         self.mode_var.set(self.controller.mode)
         self.simulation_var.set(sim)
+        self.run_state_var.set(f"Durum: {self.controller.run_state}")
         self.auto_threshold_var.set(self.controller.auto_threshold_enabled)
         self.target_color_var.set(self.controller.auto_target_color)
 
@@ -1092,6 +1152,8 @@ class HTAControlGUI:
             self.metric_labels.get("simulation", tk.StringVar()).set(
                 "acik" if metrics.get("simulation") else "kapali"
             )
+            rs = metrics.get("run_state", "")
+            self.metric_labels.get("run_state", tk.StringVar()).set(rs)
             self.metric_labels.get("auto_target_color", tk.StringVar()).set(metrics.get("auto_target_color", ""))
             self.metric_labels.get("auto_threshold", tk.StringVar()).set(
                 "acik" if metrics.get("auto_threshold") else "kapali"
