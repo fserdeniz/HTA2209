@@ -16,6 +16,10 @@ from typing import Dict
 
 import cv2
 from PIL import Image, ImageTk
+try:
+    from picamera2 import Picamera2
+except ImportError:  # Picamera2 yoksa alt tarafta yeniden deneyecegiz
+    Picamera2 = None  # type: ignore
 
 from .controller import RobotController
 from . import detector
@@ -34,17 +38,12 @@ THRESHOLD_FIELDS = (
 MANUAL_DRIVE_INCREMENT = 10
 MANUAL_TURN_INCREMENT = 10
 JOINT_INCREMENT = 5
+JOINT_SPEED_INCREMENT = 10
 JOINT_KEY_BINDINGS = {
-    "q": ("base", JOINT_INCREMENT),
-    "a": ("base", -JOINT_INCREMENT),
-    "w": ("shoulder", JOINT_INCREMENT),
-    "s": ("shoulder", -JOINT_INCREMENT),
-    "e": ("elbow", JOINT_INCREMENT),
-    "d": ("elbow", -JOINT_INCREMENT),
-    "r": ("wrist", JOINT_INCREMENT),
-    "f": ("wrist", -JOINT_INCREMENT),
-    "t": ("gripper", JOINT_INCREMENT),
-    "g": ("gripper", -JOINT_INCREMENT),
+    "q": ("joint", JOINT_INCREMENT),
+    "a": ("joint", -JOINT_INCREMENT),
+    "t": ("gripper", JOINT_SPEED_INCREMENT),
+    "g": ("gripper", -JOINT_SPEED_INCREMENT),
 }
 
 CAMERA_FRAME_INTERVAL_MS = 50
@@ -66,7 +65,11 @@ class HTAControlGUI:
         self.manual_drive_level = 0.0
         self.manual_turn_level = 0.0
 
-        self.source_type_var = tk.StringVar(value="camera")
+        self.picam_supported = False
+        self.picam: Picamera2 | None = None
+        self._ensure_picamera2()
+
+        self.source_type_var = tk.StringVar(value="picam")
         self.camera_index_var = tk.IntVar(value=0)
         self.camera_choice_var = tk.StringVar(value="")
         self._camera_failures = 0
@@ -103,10 +106,36 @@ class HTAControlGUI:
         self.repo_root = Path(__file__).resolve().parents[2]
 
         self._create_widgets()
-        self._refresh_camera_devices()
+        if not self.picam_supported:
+            self._refresh_camera_devices()
+        else:
+            # V4L2 taramasi yapma, dogrudan Picamera2 kullan
+            self.camera_choice_var.set("Picamera2")
         self.refresh_from_controller()
         self.root.bind_all("<KeyPress>", self._on_key_press)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _ensure_picamera2(self) -> None:
+        """Try to import Picamera2 even if not in virtualenv site-packages."""
+        global Picamera2
+        if self.picam_supported:
+            return
+        if Picamera2 is not None:
+            self.picam_supported = True
+            return
+        candidates = [
+            f"/usr/lib/python{sys.version_info.major}.{sys.version_info.minor}/dist-packages",
+            "/usr/lib/python3/dist-packages",  # system python default (3.x)
+        ]
+        for candidate in candidates:
+            if candidate not in sys.path:
+                sys.path.append(candidate)
+        try:
+            from picamera2 import Picamera2 as _Picamera2
+            Picamera2 = _Picamera2  # type: ignore
+            self.picam_supported = True
+        except Exception:
+            self.picam_supported = False
 
     # ------------------------------------------------------------------ #
     def _create_widgets(self) -> None:
@@ -293,11 +322,21 @@ class HTAControlGUI:
     def _on_wheel_change(self, wheel: str, value: float) -> None:
         if self._updating:
             return
+        # Kullanici hareket verdiğinde stopped ise otomatik baslat
+        if not self.controller.is_running():
+            try:
+                self.controller.set_run_state("started")
+                self.run_state_var.set(f"Durum: {self.controller.run_state}")
+            except Exception:
+                pass
         self.controller.set_wheel_speed(wheel, value)
         self.wheel_value_labels[wheel].set(f"{value:.0f}%")
 
     def _stop_wheels(self) -> None:
-        self._reset_manual_motion()
+        self.manual_drive_level = 0.0
+        self.manual_turn_level = 0.0
+        self.controller.stop_wheels()
+        self.refresh_from_controller()
 
     def _reset_manual_motion(self) -> None:
         self.manual_drive_level = 0.0
@@ -316,10 +355,22 @@ class HTAControlGUI:
             self._adjust_turn(-MANUAL_TURN_INCREMENT)
 
     def _adjust_drive(self, delta: float) -> None:
+        if not self.controller.is_running():
+            try:
+                self.controller.set_run_state("started")
+                self.run_state_var.set(f"Durum: {self.controller.run_state}")
+            except Exception:
+                pass
         self.manual_drive_level = self._clamp_speed(self.manual_drive_level + delta)
         self._apply_drive_turn()
 
     def _adjust_turn(self, delta: float) -> None:
+        if not self.controller.is_running():
+            try:
+                self.controller.set_run_state("started")
+                self.run_state_var.set(f"Durum: {self.controller.run_state}")
+            except Exception:
+                pass
         self.manual_turn_level = self._clamp_speed(self.manual_turn_level + delta)
         self._apply_drive_turn()
 
@@ -342,17 +393,29 @@ class HTAControlGUI:
             lf = ttk.LabelFrame(frame, text=joint.title(), padding=10)
             lf.grid(row=idx // 2, column=idx % 2, padx=10, pady=10, sticky="nsew")
             frame.grid_columnconfigure(idx % 2, weight=1)
-            var = tk.StringVar(value="90")
+            var = tk.StringVar(value="0" if joint in self.controller.continuous() else "90")
             self.joint_labels[joint] = var
             ttk.Label(lf, textvariable=var, font=("Segoe UI", 11, "bold")).pack(anchor=tk.W)
-            scale = ttk.Scale(
-                lf,
-                from_=0,
-                to=180,
-                orient=tk.HORIZONTAL,
-                command=lambda val, j=joint: self._on_joint_change(j, float(val)),
-                length=300,
-            )
+            if joint in self.controller.continuous():
+                scale = ttk.Scale(
+                    lf,
+                    from_=-100,
+                    to=100,
+                    orient=tk.HORIZONTAL,
+                    command=lambda val, j=joint: self._on_joint_change(j, float(val)),
+                    length=300,
+                )
+                ttk.Label(lf, text="Hiz (%)").pack(anchor=tk.W)
+            else:
+                scale = ttk.Scale(
+                    lf,
+                    from_=0,
+                    to=180,
+                    orient=tk.HORIZONTAL,
+                    command=lambda val, j=joint: self._on_joint_change(j, float(val)),
+                    length=300,
+                )
+                ttk.Label(lf, text="Aci (derece)").pack(anchor=tk.W)
             scale.pack(fill=tk.X, padx=5, pady=10)
             self.joint_scales[joint] = scale
         return frame
@@ -413,8 +476,12 @@ class HTAControlGUI:
     def _on_joint_change(self, joint: str, value: float) -> None:
         if self._updating:
             return
-        self.controller.set_joint_angle(joint, value)
-        self.joint_labels[joint].set(f"{value:.0f}")
+        if joint in self.controller.continuous():
+            self.controller.set_continuous_speed(joint, value)
+            self.joint_labels[joint].set(f"{value:.0f}%")
+        else:
+            self.controller.set_joint_angle(joint, value)
+            self.joint_labels[joint].set(f"{value:.0f}°")
 
     # ------------------------------------------------------------------ #
     def _select_video(self) -> None:
@@ -441,7 +508,7 @@ class HTAControlGUI:
         return f"/dev/video{index} - {name}"
 
     def _is_capture_device(self, index: int) -> bool:
-        """Return True if device is a real capture node (skip ISP/codec)."""
+        """Return True if device is a real capture node (skip ISP/codec/meta)."""
         sys_path = Path(f"/sys/class/video4linux/video{index}")
         driver = ""
         driver_link = sys_path / "device/driver"
@@ -451,9 +518,16 @@ class HTAControlGUI:
             except OSError:
                 driver = ""
 
-        # Prefer USB UVC cameras; skip bcm2835 ISP/codec nodes
-        if driver and driver not in {"uvcvideo"}:
-            return False
+        # Known non-capture nodes to skip
+        skip_drivers = {
+            "bcm2835-codec",
+            "bcm2835-isp",
+            "rpi-hevc-dec",
+            # Unicam düğümlerini libcamera üzerinden kullanacağız; V4L2 capture denemeyelim
+            "unicam",
+        }
+        # Allow UVC (USB) capture drivers
+        allow_drivers = {"uvcvideo"}
 
         try:
             proc = subprocess.run(
@@ -464,64 +538,36 @@ class HTAControlGUI:
             )
         except FileNotFoundError:
             # v4l2-ctl yoksa sadece driver filtresine göre karar ver
-            return driver == "uvcvideo"
+            if driver and driver in skip_drivers:
+                return False
+            return not driver or driver in allow_drivers
+
         if proc.returncode != 0:
             return False
         stdout = proc.stdout
-        if "Driver name" in stdout and "bcm2835" in stdout.split("Driver name", 1)[1]:
-            return False
-        # Device Caps satirinda Video Capture var mi?
-        return "Device Caps" in stdout and "Video Capture" in stdout.split("Device Caps", 1)[1]
+
+        # Filter by driver name from v4l2-ctl if available
+        if "Driver name" in stdout:
+            driver_name = stdout.split("Driver name", 1)[1]
+            if any(skip in driver_name for skip in skip_drivers):
+                return False
+
+        has_capture = "Device Caps" in stdout and "Video Capture" in stdout.split("Device Caps", 1)[1]
+        return has_capture
 
     def _refresh_camera_devices(self) -> None:
-        devices: list[tuple[int, str]] = []
-        base = Path("/sys/class/video4linux")
-        if base.exists():
-            for entry in sorted(base.glob("video*")):
-                try:
-                    idx = int(entry.name.replace("video", ""))
-                except ValueError:
-                    continue
-                if not self._is_capture_device(idx):
-                    continue
-                name_file = entry / "name"
-                name = name_file.read_text().strip() if name_file.exists() else "Bilinmiyor"
-                devices.append((idx, name))
-
-        # Windows/macOS veya v4l2 olmayan ortamlarda hizli tarama (yerel/embedded kameralar)
-        if not devices:
-            probe_range = list(range(0, 5))
-            for idx in probe_range:
-                if self._check_camera_available(idx):
-                    devices.append((idx, "Varsayilan Kamera"))
-
-        self._camera_devices = devices
+        # Yalnızca Picamera2 kullanılıyor; V4L2 taraması yapılmıyor.
+        self._camera_devices = []
+        self.camera_choice_var.set("Picamera2")
         self._update_camera_combo()
-
-        if not devices:
-            self.camera_choice_var.set("")
-            return
-
-        current_idx = self.camera_index_var.get()
-        available_indices = [idx for idx, _ in devices]
-        if current_idx not in available_indices:
-            current_idx = devices[0][0]
-            self.camera_index_var.set(current_idx)
-        for idx, name in devices:
-            if idx == current_idx:
-                self.camera_choice_var.set(self._format_camera_label(idx, name))
-                break
 
     def _update_camera_combo(self) -> None:
         if self.camera_combo is None:
             return
         values = [self._format_camera_label(idx, name) for idx, name in self._camera_devices]
         self.camera_combo["values"] = values
-        if values and self.camera_choice_var.get() not in values:
-            self.camera_choice_var.set(values[0])
-            self.camera_index_var.set(self._camera_devices[0][0])
         if not values:
-            self.camera_choice_var.set("")
+            self.camera_choice_var.set("Picamera2")
             self.camera_status_var.set("Kamera bulunamadi")
 
     def _on_camera_choice(self, _event=None) -> None:
@@ -535,74 +581,21 @@ class HTAControlGUI:
 
     def _start_stream(self) -> None:
         self._stop_stream()
-        source = self.source_type_var.get()
-        if source == "camera":
-            if not self._camera_devices:
-                self._refresh_camera_devices()
-            if not self._camera_devices:
-                self.camera_status_var.set("Kamera bulunamadi")
-                messagebox.showerror("Kamera", "Hicbir /dev/video* cihazi bulunamadi.")
-                return
-            index = self.camera_index_var.get()
-            available_indices = [idx for idx, _ in self._camera_devices]
-            if index not in available_indices:
-                index = self._camera_devices[0][0]
-                self.camera_index_var.set(index)
-
-            # Try preferred index first, then fall back to others if it fails
-            ordered_candidates = [index] + [i for i in available_indices if i != index]
-            capture: cv2.VideoCapture | None = None
-            chosen_index: int | None = None
-            for candidate in ordered_candidates:
-                capture = self._open_camera_capture(candidate)
-                if capture is not None:
-                    chosen_index = candidate
-                    break
-            if capture is None or chosen_index is None:
-                self.camera_status_var.set(f"Kamera acilamadi (denenen indexler: {ordered_candidates})")
-                messagebox.showerror(
-                    "Kamera",
-                    "Kamera acilamadi. USB baglantisini/kabloyu kontrol edin ve tekrar deneyin.",
-                )
-                return
-
-            self.camera_index_var.set(chosen_index)
-            self.camera_capture = capture
-            self.camera_running = True
-            self._camera_failures = 0
-            self._current_camera_index = chosen_index
-            self.camera_status_var.set(f"Kamera acik (index {chosen_index}, 640x480 YUYV @10fps)")
-            self._update_camera_frame()
-        elif source == "video":
-            path = self.video_path_var.get()
-            if not path:
-                messagebox.showerror("Video", "Lutfen bir video dosyasi secin.")
-                return
-            capture = cv2.VideoCapture(path)
-            if not capture.isOpened():
-                self.camera_status_var.set("Video acilamadi")
-                messagebox.showerror("Video", f"Video acilamadi: {path}")
-                capture.release()
-                return
-            self.camera_capture = capture
-            self.camera_running = True
-            self.camera_status_var.set(f"Video acik: {Path(path).name}")
-            self._update_camera_frame()
-        elif source == "folder":
-            folder = self.folder_path_var.get()
-            if not folder:
-                messagebox.showerror("Resim Klasoru", "Lutfen bir resim klasoru secin.")
-                return
-            exts = {".jpg", ".jpeg", ".png", ".bmp"}
-            files = sorted([p for p in Path(folder).iterdir() if p.suffix.lower() in exts])
-            if not files:
-                messagebox.showerror("Resim Klasoru", "Klasorde desteklenen resim bulunamadi.")
-                return
-            self._folder_images = files
-            self._folder_index = 0
-            self.camera_running = True
-            self.camera_status_var.set(f"Resim klasoru: {Path(folder).name} ({len(files)} adet)")
-            self._update_folder_frame()
+        try:
+            if self.picam is None:
+                self.picam = Picamera2()
+            config = self.picam.create_video_configuration(main={"size": (1280, 720), "format": "RGB888"})
+            self.picam.configure(config)
+            self.picam.start()
+        except Exception as exc:
+            self.camera_status_var.set(f"Picamera2 acilamadi: {exc}")
+            messagebox.showerror("Kamera", f"Picamera2 acilamadi: {exc}")
+            return
+        self.camera_running = True
+        self._camera_failures = 0
+        self._current_camera_index = None
+        self.camera_status_var.set("Kamera acik (Picamera2 1280x720)")
+        self._update_picam_frame()
 
     def _stop_stream(self) -> None:
         self.camera_running = False
@@ -612,6 +605,11 @@ class HTAControlGUI:
         if self.camera_capture is not None:
             self.camera_capture.release()
             self.camera_capture = None
+        if self.picam is not None:
+            try:
+                self.picam.stop()
+            except Exception:
+                pass
         self.camera_status_var.set("Kaynak kapali")
         if self.camera_label is not None:
             self.camera_label.configure(image="", text="Onizleme yok")
@@ -627,6 +625,9 @@ class HTAControlGUI:
             return
 
         source = self.source_type_var.get()
+        if source == "picam":
+            self._update_picam_frame()
+            return
         if source == "folder":
             self._update_folder_frame()
             return
@@ -665,11 +666,14 @@ class HTAControlGUI:
             hsv = cv2.cvtColor(self._last_frame, cv2.COLOR_BGR2HSV)
             self.controller.autopilot_step(hsv, (frame.shape[1], frame.shape[0]))
             if self.controller.last_target:
-                cx, cy, area, depth = self.controller.last_target
+                lt = self.controller.last_target
+                cx, cy, area = lt[0], lt[1], lt[2]
+                depth = lt[3] if len(lt) > 3 else None
                 cv2.circle(display_frame, (cx, cy), 8, (0, 255, 0), 2)
+                label = f"X={cx}, Y={cy}" if depth is None else f"X={cx}, Y={cy}, Z~{depth:.2f}"
                 cv2.putText(
                     display_frame,
-                    f"X={cx}, Y={cy}, Z~{depth:.2f}",
+                    label,
                     (cx + 10, max(20, cy - 10)),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -722,11 +726,14 @@ class HTAControlGUI:
                 hsv = cv2.cvtColor(self._last_frame, cv2.COLOR_BGR2HSV)
                 self.controller.autopilot_step(hsv, (frame.shape[1], frame.shape[0]))
                 if self.controller.last_target:
-                    cx, cy, area, depth = self.controller.last_target
+                    lt = self.controller.last_target
+                    cx, cy, area = lt[0], lt[1], lt[2]
+                    depth = lt[3] if len(lt) > 3 else None
                     cv2.circle(display_frame, (cx, cy), 8, (0, 255, 0), 2)
+                    label = f"X={cx}, Y={cy}" if depth is None else f"X={cx}, Y={cy}, Z~{depth:.2f}"
                     cv2.putText(
                         display_frame,
-                        f"X={cx}, Y={cy}, Z~{depth:.2f}",
+                        label,
                         (cx + 10, max(20, cy - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
@@ -751,6 +758,77 @@ class HTAControlGUI:
         self._auto_frame_counter += 1
         self._folder_index = (self._folder_index + 1) % len(self._folder_images)
         self.camera_loop_id = self.root.after(CAMERA_FRAME_INTERVAL_MS, self._update_folder_frame)
+
+    def _update_picam_frame(self) -> None:
+        if not self.camera_running or self.picam is None:
+            return
+        try:
+            frame = self.picam.capture_array()
+            if frame is None:
+                raise RuntimeError("Picamera2 frame is None")
+            # Kamera ters takili, 180 derece cevir
+            frame = cv2.rotate(frame, cv2.ROTATE_180)
+        except Exception as exc:
+            self._camera_failures += 1
+            if self._camera_failures >= 5:
+                self.camera_status_var.set(f"Picamera2 kare okunamadi ({exc}), durduruluyor.")
+                self._stop_stream()
+                return
+            self.camera_loop_id = self.root.after(CAMERA_FRAME_INTERVAL_MS, self._update_picam_frame)
+            return
+
+        self._camera_failures = 0
+        # Picamera2 capture_array() ile donen veriyi BGR kabul ediyoruz (gercek cihaz renkleri dogru kalsin)
+        self._last_frame = frame
+        display_frame = self._last_frame
+
+        if self.ai_detection_var.get():
+            overlay, colors = detector.analyze_frame(self._last_frame)
+            display_frame = overlay
+            if colors:
+                color_names = ", ".join([c[0] for c in colors])
+                self.ai_colors_var.set(f"Dominant renkler: {color_names}")
+            else:
+                self.ai_colors_var.set("Dominant renk bulunamadi")
+        else:
+            self.ai_colors_var.set("")
+
+        if not self.controller.is_manual():
+            hsv = cv2.cvtColor(self._last_frame, cv2.COLOR_BGR2HSV)
+            self.controller.autopilot_step(hsv, (display_frame.shape[1], display_frame.shape[0]))
+            if self.controller.last_target:
+                lt = self.controller.last_target
+                cx, cy, area = lt[0], lt[1], lt[2]
+                depth = lt[3] if len(lt) > 3 else None
+                cv2.circle(display_frame, (cx, cy), 8, (0, 255, 0), 2)
+                label = f"X={cx}, Y={cy}" if depth is None else f"X={cx}, Y={cy}, Z~{depth:.2f}"
+                cv2.putText(
+                    display_frame,
+                    label,
+                    (cx + 10, max(20, cy - 10)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2,
+                )
+            self.refresh_from_controller()
+
+        rgb_for_display = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
+        image = Image.fromarray(rgb_for_display)
+        image = image.resize(CAMERA_PREVIEW_SIZE, Image.Resampling.LANCZOS)
+        photo = ImageTk.PhotoImage(image=image)
+        if self.camera_label is not None:
+            self.camera_label.configure(image=photo, text="")
+            self.camera_label.image = photo  # type: ignore[attr-defined]
+        self._camera_photo = photo
+
+        self._auto_frame_counter += 1
+        if self.controller.auto_threshold_enabled and self._auto_frame_counter % 10 == 0:
+            hsv = cv2.cvtColor(self._last_frame, cv2.COLOR_BGR2HSV)
+            self.controller.auto_calibrate_from_frame(hsv)
+            self._refresh_threshold_fields()
+
+        self.camera_loop_id = self.root.after(CAMERA_FRAME_INTERVAL_MS, self._update_picam_frame)
 
     # ------------------------------------------------------------------ #
     # Test helpers
@@ -873,39 +951,19 @@ class HTAControlGUI:
         ttk.Button(settings, text="Kaydet", command=self._save_state).pack(fill=tk.X, pady=2)
         ttk.Button(settings, text="Yeniden Yukle", command=self._reload_state).pack(fill=tk.X, pady=2)
 
-        cam_box = ttk.LabelFrame(sidebar, text="Kamera Kontrolu", padding=10)
+        cam_box = ttk.LabelFrame(sidebar, text="Kamera Kontrolu (Sadece CSI/Picamera2)", padding=10)
         cam_box.pack(fill=tk.X, pady=(0, 10))
         row = 0
-        ttk.Radiobutton(cam_box, text="Kamera", value="camera", variable=self.source_type_var).grid(
-            row=row, column=0, sticky="w"
+        ttk.Label(cam_box, text="Kaynak: Raspberry Pi Camera Module 3 (Picamera2)").grid(
+            row=row, column=0, columnspan=4, sticky="w"
         )
-        ttk.Radiobutton(cam_box, text="Video", value="video", variable=self.source_type_var).grid(
-            row=row, column=1, sticky="w"
-        )
-        ttk.Radiobutton(cam_box, text="Resim Klasoru", value="folder", variable=self.source_type_var).grid(
-            row=row, column=2, sticky="w"
-        )
-        row += 1
-
-        ttk.Label(cam_box, text="Kamera Sec:").grid(row=row, column=0, sticky="w")
-        self.camera_combo = ttk.Combobox(
-            cam_box,
-            textvariable=self.camera_choice_var,
-            state="readonly",
-            width=28,
-        )
-        self.camera_combo.grid(row=row, column=1, columnspan=2, padx=5, pady=2, sticky="ew")
-        self.camera_combo.bind("<<ComboboxSelected>>", self._on_camera_choice)
-        ttk.Button(cam_box, text="Yenile", command=self._refresh_camera_devices).grid(row=row, column=3, pady=2, sticky="ew")
-        row += 1
-
-        ttk.Button(cam_box, text="Video Sec", command=self._select_video).grid(row=row, column=0, columnspan=2, pady=2, sticky="ew")
-        ttk.Button(cam_box, text="Resim Klasoru Sec", command=self._select_folder).grid(row=row, column=2, columnspan=2, pady=2, sticky="ew")
         row += 1
 
         ttk.Button(cam_box, text="Baslat", command=self._start_stream).grid(row=row, column=0, columnspan=2, padx=5, pady=2, sticky="ew")
         ttk.Button(cam_box, text="Durdur", command=self._stop_stream).grid(row=row, column=2, columnspan=2, padx=5, pady=2, sticky="ew")
         row += 1
+
+        ttk.Label(cam_box, textvariable=self.camera_status_var).grid(row=row, column=0, columnspan=4, sticky="w")
 
         ttk.Label(cam_box, textvariable=self.camera_status_var).grid(row=row, column=0, columnspan=4, sticky="w")
 
@@ -984,7 +1042,10 @@ class HTAControlGUI:
         if joint_cmd:
             joint, delta = joint_cmd
             current = self.controller.arm_state[joint]
-            self.controller.set_joint_angle(joint, current + delta)
+            if joint in self.controller.continuous():
+                self.controller.set_continuous_speed(joint, current + (JOINT_SPEED_INCREMENT if delta > 0 else -JOINT_SPEED_INCREMENT))
+            else:
+                self.controller.set_joint_angle(joint, current + delta)
             self.refresh_from_controller()
 
     def _on_mode_change(self) -> None:
@@ -1033,16 +1094,8 @@ class HTAControlGUI:
         return [cv2.CAP_V4L2, cv2.CAP_ANY]
 
     def _check_camera_available(self, index: int) -> bool:
-        for backend in self._camera_backends():
-            cap = cv2.VideoCapture(index, backend)
-            if not cap.isOpened():
-                cap.release()
-                continue
-            ret, _ = cap.read()
-            cap.release()
-            if ret:
-                return True
-        return False
+        # Kamera mevcudiyetini hızlı liste kontrolüyle sınırla; açma/okuma denemesi yapma (timeout engeli).
+        return True
 
     def _open_camera_capture(self, index: int) -> cv2.VideoCapture | None:
         """Open camera with a safe default format and verify frame read."""
@@ -1140,9 +1193,12 @@ class HTAControlGUI:
             self.manual_turn_level = (left_avg - right_avg) / 2
 
         for joint, scale in self.joint_scales.items():
-            angle = self.controller.arm_state[joint]
-            scale.set(angle)
-            self.joint_labels[joint].set(f"{angle:.0f}")
+            val = self.controller.arm_state[joint]
+            scale.set(val)
+            if joint in self.controller.continuous():
+                self.joint_labels[joint].set(f"{val:.0f}%")
+            else:
+                self.joint_labels[joint].set(f"{val:.0f}°")
 
         self._set_manual_controls_state(self.controller.is_manual())
         # update metrics
@@ -1181,7 +1237,11 @@ class HTAControlGUI:
             for joint in self.controller.joints():
                 var = self.metric_labels.get(f"joint_{joint}")
                 if var:
-                    var.set(f"{self.controller.arm_state[joint]:.0f}")
+                    val = self.controller.arm_state[joint]
+                    if joint in self.controller.continuous():
+                        var.set(f"{val:.0f}%")
+                    else:
+                        var.set(f"{val:.0f}°")
         self._updating = False
 
     # ------------------------------------------------------------------ #
@@ -1200,6 +1260,14 @@ class HTAControlGUI:
 
     def _on_close(self) -> None:
         self._stop_stream()
+        try:
+            self.controller.save_config()
+        except Exception:
+            pass
+        try:
+            self.controller.cleanup()
+        except Exception:
+            pass
         self.root.destroy()
 
     # ------------------------------------------------------------------ #

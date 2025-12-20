@@ -1,6 +1,6 @@
 {
-  "mode": "auto",
-  "simulation": true,
+  "mode": "manual",
+  "simulation": false,
   "run_state": "started",
   "auto_threshold": true,
   "auto_target_color": "yellow",
@@ -17,68 +17,69 @@
     "rear_right": 0.0
   },
   "arm": {
-    "base": 74.25,
-    "shoulder": 105.0,
-    "elbow": 130.0,
-    "wrist": 90.0,
-    "gripper": 10.0
+    "joint": 110.32876712328768,
+    "gripper": 0.0
+  },
+  "servo_channels": {
+    "joint": 0,
+    "gripper": 3
   },
   "thresholds": {
     "red": {
       "hue_min": 0,
       "hue_max": 30,
-      "sat_min": 11,
-      "sat_max": 72,
-      "val_min": 28,
-      "val_max": 194
+      "sat_min": 8,
+      "sat_max": 161,
+      "val_min": 21,
+      "val_max": 183
     },
     "green": {
       "hue_min": 0,
       "hue_max": 30,
-      "sat_min": 11,
-      "sat_max": 72,
-      "val_min": 28,
-      "val_max": 194
+      "sat_min": 8,
+      "sat_max": 161,
+      "val_min": 21,
+      "val_max": 183
     },
     "blue": {
       "hue_min": 0,
       "hue_max": 30,
-      "sat_min": 11,
-      "sat_max": 72,
-      "val_min": 28,
-      "val_max": 194
+      "sat_min": 8,
+      "sat_max": 161,
+      "val_min": 21,
+      "val_max": 183
     },
     "yellow": {
       "hue_min": 20,
       "hue_max": 40,
-      "sat_min": 11,
-      "sat_max": 72,
-      "val_min": 28,
-      "val_max": 194
+      "sat_min": 8,
+      "sat_max": 161,
+      "val_min": 21,
+      "val_max": 183
     },
     "orange": {
       "hue_min": 5,
       "hue_max": 25,
-      "sat_min": 11,
-      "sat_max": 72,
-      "val_min": 28,
-      "val_max": 194
+      "sat_min": 8,
+      "sat_max": 161,
+      "val_min": 21,
+      "val_max": 183
     },
     "purple": {
       "hue_min": 130,
       "hue_max": 165,
-      "sat_min": 11,
-      "sat_max": 72,
-      "val_min": 28,
-      "val_max": 194
+      "sat_min": 8,
+      "sat_max": 161,
+      "val_min": 21,
+      "val_max": 183
     },
     "cyan": {
       "hue_min": 80,
       "hue_max": 100,
-      "sat_min": 11,
-      "sat_max": 72,
-      "val_min": 28,
-      "val_max": 194
+      "sat_min": 8,
+      "sat_max": 161,
+      "val_min": 21,
+      "val_max": 183
     }
   }
 }
