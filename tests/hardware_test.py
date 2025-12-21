@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import os
 import sys
+from time import sleep
 from typing import Optional
 
 import cv2
 
 REQUIRE_HARDWARE = os.getenv("REQUIRE_HARDWARE", "0").lower() in ("1", "true", "yes", "on")
+CAM_INDEX = int(os.getenv("CAMERA_INDEX", "0"))
 
 
 def check_servokit() -> tuple[bool, Optional[Exception]]:
@@ -29,10 +31,14 @@ def check_servokit() -> tuple[bool, Optional[Exception]]:
 
 
 def check_camera(index: int = 0) -> tuple[bool, Optional[Exception]]:
-    cap = cv2.VideoCapture(index)
+    cap = cv2.VideoCapture(index, cv2.CAP_V4L2)
     if not cap.isOpened():
         cap.release()
         return False, RuntimeError(f"Camera index {index} could not be opened")
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 10)
+    sleep(0.2)
     ok, _ = cap.read()
     cap.release()
     if not ok:
@@ -56,9 +62,9 @@ def main() -> None:
             warnings.append(msg)
             print(f"[WARN] {msg} (hardware not required)")
 
-    cam_ok, cam_err = check_camera(index=0)
+    cam_ok, cam_err = check_camera(index=CAM_INDEX)
     if cam_ok:
-        print("[OK] Camera index 0 opened and delivered a frame")
+        print(f"[OK] Camera index {CAM_INDEX} opened and delivered a frame")
     else:
         msg = str(cam_err)
         if REQUIRE_HARDWARE:

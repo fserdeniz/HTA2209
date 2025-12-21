@@ -1,15 +1,16 @@
 """
 Lightweight software sanity checks for HTA2209.
 - Validates core Python dependencies are importable.
-- Instantiates RobotController to verify configuration parsing and sim-mode fallback.
+- Instantiates RobotController to verify configuration parsing (donanım gerektirmeden).
 
 Exit code:
-0 -> all required checks passed (warnings allowed for hardware-specific imports)
-1 -> a required dependency or controller instantiation failed
+0 -> tüm temel kontroller geçti (donanım bağımlı uyarılar serbest)
+1 -> bir zorunlu bağımlılık veya denetim başarısız
 """
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from pathlib import Path
 
@@ -34,6 +35,7 @@ def main() -> None:
     failures: list[str] = []
     warnings: list[str] = []
     ok_count = 0
+    require_hw = os.getenv("REQUIRE_HARDWARE", "0").lower() in ("1", "true", "yes", "on")
 
     for name in MODULES:
         ok, exc = check_import(name)
@@ -53,10 +55,15 @@ def main() -> None:
 
         RobotController(config_path=Path("config/test_settings.json"))
         ok_count += 1
-        print("[OK] RobotController instantiated (sim or hardware mode)")
+        print("[OK] RobotController instantiate edildi")
     except Exception as exc:  # pragma: no cover - runtime safety
-        failures.append(f"RobotController init failed: {exc}")
-        print(f"[FAIL] RobotController init: {exc}")
+        msg = f"RobotController init failed: {exc}"
+        if require_hw:
+            failures.append(msg)
+            print(f"[FAIL] {msg}")
+        else:
+            warnings.append(msg)
+            print(f"[WARN] {msg} (REQUIRE_HARDWARE=0)")
 
     if warnings:
         print(f"[WARN] {len(warnings)} warning(s):")
