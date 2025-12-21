@@ -897,6 +897,16 @@ class RobotController:
             self.gripper_burst_until = 0.0
             # hedef kaybolmadan sure bittiyse tekrar tetiklenmesin diye fired kalsin
             self.gripper_cooldown_until = max(self.gripper_cooldown_until, now + 2.0)
+        # Sadece gorunur hedef yokken ve hicbir aktif hareket yoksa eski hedef gorselini sil
+        if (
+            self.last_target
+            and self.auto_detect_hits == 0
+            and not self.gripper_burst_until
+            and not self.gripper_reverse_until
+            and now - self._last_seen_time > 2.0
+        ):
+            self.last_target = None
+            self.last_target_color = None
         self.auto_detect_hits = 0
         self.last_target_color = None
 
