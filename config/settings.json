@@ -1,7 +1,7 @@
 {
   "mode": "auto",
   "simulation": false,
-  "run_state": "stopped",
+  "run_state": "started",
   "auto_threshold": true,
   "auto_target_color": "red",
   "wheel_polarity": {
