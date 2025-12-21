@@ -169,8 +169,6 @@ class RobotController:
         self._last_seen_time: float = 0.0
         self._cx_smooth: float = 0.0
         self._cy_smooth: float = 0.0
-        self._last_drive_time: float = 0.0
-        self._last_drive_cmd: Tuple[float, float] = (0.0, 0.0)
 
         # Once config yüklensin, sonra donanim baglansin (pinler config'ten gelsin)
         self.load_config()
@@ -569,10 +567,6 @@ class RobotController:
         self._last_seen_time = 0.0
         self._cx_smooth = 0.0
         self._cy_smooth = 0.0
-        self._last_drive_time = 0.0
-        self._last_drive_cmd = (0.0, 0.0)
-        self._last_drive_time = 0.0
-        self._last_drive_cmd = (0.0, 0.0)
         self._recompute_power()
         # otomatik tarama sirasinda baslatilan hareketleri de temizle
         if self.hbridge_ready and GPIO is not None:
@@ -830,11 +824,14 @@ class RobotController:
             center_x = frame_size[0] // 2
             error_x = cx_s - center_x
             norm_err = max(-1.0, min(1.0, error_x / max(1.0, frame_size[0] / 2)))
-            turn_cmd = max(-10.0, min(10.0, -norm_err * 20.0))  # hedef saga ise negatif donus
-            desired_cov = 0.45
-            stop_cov = 0.52
+            deadband = 0.05
+            if abs(norm_err) < deadband:
+                norm_err = 0.0
+            turn_cmd = max(-10.0, min(10.0, -norm_err * 18.0))  # hedef saga ise negatif donus
+            desired_cov = 0.48
+            stop_cov = 0.55
             if cov < desired_cov:
-                fwd_cmd = min(12.0, max(3.0, (desired_cov - cov) * 50.0))
+                fwd_cmd = min(10.0, max(3.0, (desired_cov - cov) * 40.0))
             elif cov >= stop_cov:
                 fwd_cmd = 0.0
             else:
