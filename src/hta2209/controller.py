@@ -167,6 +167,8 @@ class RobotController:
         self._last_auto_calib: float = 0.0
         self._coverage_smooth: float = 0.0
         self._last_seen_time: float = 0.0
+        self._cx_smooth: float = 0.0
+        self._cy_smooth: float = 0.0
 
         # Once config yüklensin, sonra donanim baglansin (pinler config'ten gelsin)
         self.load_config()
@@ -563,6 +565,8 @@ class RobotController:
         self._last_auto_calib = 0.0
         self._coverage_smooth = 0.0
         self._last_seen_time = 0.0
+        self._cx_smooth = 0.0
+        self._cy_smooth = 0.0
         self._recompute_power()
         # otomatik tarama sirasinda baslatilan hareketleri de temizle
         if self.hbridge_ready and GPIO is not None:
@@ -657,13 +661,13 @@ class RobotController:
                 return None
             largest = max(contours, key=cv2.contourArea)
             area = cv2.contourArea(largest)
-            # Kucuk hedefler icin limitleri dusur: en az %0.5 alan veya 800 piksel
-            min_area = max(800.0, mask_img.shape[0] * mask_img.shape[1] * 0.005)
+            # Kucuk hedefler icin limit: en az %0.4 alan veya 600 piksel
+            min_area = max(600.0, mask_img.shape[0] * mask_img.shape[1] * 0.004)
             if area < min_area:
                 return None
             mask_ratio = float(cv2.countNonZero(mask_img)) / float(mask_img.shape[0] * mask_img.shape[1])
-            # Maske orani cok dusukse ele (min %1)
-            if mask_ratio < 0.01:
+            # Maske orani cok dusukse ele (min %0.8)
+            if mask_ratio < 0.008:
                 return None
             M = cv2.moments(largest)
             if M["m00"] == 0:
@@ -722,6 +726,8 @@ class RobotController:
         self._last_auto_calib = 0.0
         self._coverage_smooth = 0.0
         self._last_seen_time = 0.0
+        self._cx_smooth = 0.0
+        self._cy_smooth = 0.0
 
     def autopilot_step(self, hsv_frame: np.ndarray, frame_size: Tuple[int, int], dominant_colors: Optional[list[str]] = None) -> None:
         """
@@ -736,6 +742,9 @@ class RobotController:
         if hsv_frame is None or hsv_frame.size == 0:
             LOGGER.debug("Auto: bos kare, tarama adimi yapilmadi.")
             return
+
+        # Hafif bulanıklaştırma ile gürültüyü azalt
+        hsv_proc = cv2.GaussianBlur(hsv_frame, (3, 3), 0)
 
         # Auto modda periyodik renk kalibrasyonu (her 5 sn)
         if self.auto_threshold_enabled and now - self._last_auto_calib >= 5.0:
@@ -761,10 +770,7 @@ class RobotController:
         best_target = None
         best_color = None
         for color in allowed_colors:
-            if dominant_colors is not None and color not in dominant_colors:
-                LOGGER.debug("Auto: dominant listede %s yok, atlandi.", color)
-                continue
-            _mask, candidate = self._mask_target(hsv_frame, color)
+            _mask, candidate = self._mask_target(hsv_proc, color)
             if candidate is None:
                 continue
             if best_target is None or candidate[2] > best_target[2]:
@@ -785,6 +791,14 @@ class RobotController:
 
             cx, cy, area, depth_norm, mask_ratio, _color = best_target
             self._last_seen_time = now
+            # merkez yumuşat (daha hızlı tepki)
+            alpha = 0.4
+            if self._cx_smooth == 0 and self._cy_smooth == 0:
+                self._cx_smooth, self._cy_smooth = cx, cy
+            else:
+                self._cx_smooth = alpha * self._cx_smooth + (1 - alpha) * cx
+                self._cy_smooth = alpha * self._cy_smooth + (1 - alpha) * cy
+            cx_s = self._cx_smooth
             # Ayni renkte ardil tespitleri say
             if best_color != self.last_target_color:
                 self.auto_detect_hits = 0
@@ -793,7 +807,7 @@ class RobotController:
             self._target_was_visible = True
             self._gripper_fired = False  # takipte yeniden tetiklemeye izin ver (cooldown korunur)
             LOGGER.info(
-                "Auto: aday (%s) hit %s/5 alan=%d oran=%.3f",
+                "Auto: aday (%s) hit %s/3 alan=%d oran=%.3f",
                 best_color,
                 self.auto_detect_hits,
                 area,
@@ -804,23 +818,21 @@ class RobotController:
             target_area = 1280 * 720
             coverage_1280 = mask_ratio * (frame_area / target_area)
             # Sinyali yumuşat
-            self._coverage_smooth = 0.6 * self._coverage_smooth + 0.4 * coverage_1280
+            self._coverage_smooth = 0.5 * self._coverage_smooth + 0.5 * coverage_1280
             cov = self._coverage_smooth
-            # Hedefe dogru yonel: goruntu ortasina gelene kadar don, hedef yakinsa ileri hiz dusur
+            # Hedefe dogru yonel: goruntu ortasina gelene kadar don, sadece ileri hareket
             center_x = frame_size[0] // 2
-            error_x = cx - center_x
+            error_x = cx_s - center_x
             norm_err = max(-1.0, min(1.0, error_x / max(1.0, frame_size[0] / 2)))
-            turn_cmd = max(-25.0, min(25.0, -norm_err * 45.0))  # hedef saga ise negatif donus
-            desired_cov = 0.32
-            approach_band = 0.05  # ± tolerans
-            if cov < desired_cov - approach_band:
-                fwd_cmd = min(60.0, max(15.0, (desired_cov - cov) * 180.0))
-            elif cov > 0.58:
-                fwd_cmd = -25.0
-            elif cov > desired_cov + approach_band:
-                fwd_cmd = -15.0
-            else:
+            turn_cmd = max(-15.0, min(15.0, -norm_err * 30.0))  # hedef saga ise negatif donus
+            desired_cov = 0.40
+            stop_cov = 0.55
+            if cov < desired_cov:
+                fwd_cmd = min(22.0, max(6.0, (desired_cov - cov) * 90.0))
+            elif cov >= stop_cov:
                 fwd_cmd = 0.0
+            else:
+                fwd_cmd = 4.0  # cok yakinsa min ilerleme
             # Hedef teyidi yoksa (hit<2) ileri/geri yapma, sadece yönlen
             if self.auto_detect_hits < 2:
                 fwd_cmd = 0.0
@@ -841,6 +853,8 @@ class RobotController:
                 and self.gripper_burst_until == 0.0
                 and self.gripper_reverse_until == 0.0
                 and now >= self.gripper_cooldown_until
+                and self._gripper_armed
+                and self.auto_detect_hits >= 2
             ):
                 self.set_continuous_speed("gripper", 25.0)
                 self.gripper_burst_until = now + 5.0
@@ -851,7 +865,7 @@ class RobotController:
                     coverage_1280,
                 )
 
-            if self.auto_detect_hits >= 5:
+            if self.auto_detect_hits >= 3:
                 self.last_target = best_target
                 LOGGER.info("Auto: %s hedefi dogrulandi (takip devam).", best_color)
                 return

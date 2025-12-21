@@ -1,7 +1,7 @@
 {
-  "mode": "manual",
+  "mode": "auto",
   "simulation": false,
-  "run_state": "started",
+  "run_state": "stopped",
   "auto_threshold": true,
   "auto_target_color": "red",
   "wheel_polarity": {
@@ -18,7 +18,7 @@
   },
   "arm": {
     "joint": 128.14814814814815,
-    "gripper": 4.529616724738683
+    "gripper": 0.0
   },
   "servo_channels": {
     "joint": 0,
@@ -28,58 +28,58 @@
     "red": {
       "hue_min": 0,
       "hue_max": 15,
-      "sat_min": 14,
-      "sat_max": 164,
-      "val_min": 83,
-      "val_max": 192
+      "sat_min": 26,
+      "sat_max": 242,
+      "val_min": 60,
+      "val_max": 233
     },
     "green": {
       "hue_min": 45,
       "hue_max": 90,
-      "sat_min": 14,
-      "sat_max": 164,
-      "val_min": 83,
-      "val_max": 192
+      "sat_min": 26,
+      "sat_max": 242,
+      "val_min": 60,
+      "val_max": 233
     },
     "blue": {
       "hue_min": 100,
       "hue_max": 140,
-      "sat_min": 14,
-      "sat_max": 164,
-      "val_min": 83,
-      "val_max": 192
+      "sat_min": 26,
+      "sat_max": 242,
+      "val_min": 60,
+      "val_max": 233
     },
     "yellow": {
       "hue_min": 20,
       "hue_max": 40,
-      "sat_min": 14,
-      "sat_max": 164,
-      "val_min": 83,
-      "val_max": 192
+      "sat_min": 26,
+      "sat_max": 242,
+      "val_min": 60,
+      "val_max": 233
     },
     "orange": {
       "hue_min": 5,
       "hue_max": 25,
-      "sat_min": 14,
-      "sat_max": 164,
-      "val_min": 83,
-      "val_max": 192
+      "sat_min": 26,
+      "sat_max": 242,
+      "val_min": 60,
+      "val_max": 233
     },
     "purple": {
       "hue_min": 130,
       "hue_max": 165,
-      "sat_min": 14,
-      "sat_max": 164,
-      "val_min": 83,
-      "val_max": 192
+      "sat_min": 26,
+      "sat_max": 242,
+      "val_min": 60,
+      "val_max": 233
     },
     "cyan": {
       "hue_min": 80,
       "hue_max": 100,
-      "sat_min": 14,
-      "sat_max": 164,
-      "val_min": 83,
-      "val_max": 192
+      "sat_min": 26,
+      "sat_max": 242,
+      "val_min": 60,
+      "val_max": 233
     }
   }
 }
